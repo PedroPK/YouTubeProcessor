@@ -4,12 +4,13 @@ Ferramentas para extrair e processar transcrições de vídeos do YouTube com ti
 
 ## Visão Geral
 
-Dois scripts independentes, cada um com uma abordagem diferente:
+Três scripts independentes, organizados em camadas:
 
-| Script | Abordagem | Identificação de Falantes |
+| Script | Função | Depende de |
 |---|---|---|
-| `extract_transcript.py` | Legendas nativas do YouTube | Não |
-| `diarize_transcript.py` | Download de áudio + Whisper + pyannote | Sim |
+| `extract_transcript.py` | Extrai transcrição via legendas nativas do YouTube | `youtube-transcript-api`, `yt-dlp` |
+| `diarize_transcript.py` | Baixa áudio e transcreve com identificação de falantes | `whisper`, `pyannote.audio`, `torch` |
+| `summarize_transcript.py` | Gera resumo estruturado em Markdown via LLM | `openai` / `anthropic` / Ollama local |
 
 ---
 
@@ -36,6 +37,8 @@ Usa a API pública do YouTube para obter as legendas (manuais ou auto-geradas) s
 **Prós:** rápido (segundos), sem dependências pesadas.  
 **Contras:** não identifica falantes; requer que o vídeo tenha legenda disponível.
 
+Suporta todos os formatos de URL do YouTube: vídeos normais (`watch?v=`), encurtadas (`youtu.be/`), lives (`/live/`) e Shorts (`/shorts/`).
+
 ### Uso
 
 ```bash
@@ -51,8 +54,11 @@ python extract_transcript.py <URL> --langs pt pt-BR en
 # Escolher formatos de saída (padrão: json txt srt)
 python extract_transcript.py <URL> --lang pt --formats json txt
 
-# Escolher diretório de saída
+# Diretório de saída personalizado
 python extract_transcript.py <URL> --output-dir ./meus_outputs
+
+# Funciona também com URLs de live
+python extract_transcript.py "https://www.youtube.com/live/ID" --lang pt
 ```
 
 ### Argumentos
@@ -163,11 +169,66 @@ Os rótulos `SPEAKER_00`, `SPEAKER_01`... identificam falantes distintos. O mape
 
 ---
 
+---
+
+## `summarize_transcript.py` — Resumo estruturado em Markdown via LLM
+
+Recebe o JSON gerado por `extract_transcript.py` ou `diarize_transcript.py` e produz um documento Markdown com resumo executivo, temas, discussões, decisões, participantes e linha do tempo.
+
+**Estratégia map-reduce:** divide a transcrição em janelas de tempo, resume cada uma individualmente e sintetiza tudo em um documento final — permitindo processar transcrições longas que não caberiam em um único prompt.
+
+### Provedores suportados
+
+| Provider | Modelo padrão | Requisito |
+|---|---|---|
+| `openai` | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| `anthropic` | `claude-3-5-haiku-20241022` | `ANTHROPIC_API_KEY` |
+| `ollama` | `llama3.2` | Ollama rodando localmente (gratuito) |
+
+### Uso
+
+```bash
+# Com OpenAI (padrão)
+export OPENAI_API_KEY="sk-..."
+python summarize_transcript.py transcripts/video.json
+
+# Com Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+python summarize_transcript.py transcripts/video.json --provider anthropic
+
+# Com Ollama local (gratuito, sem API key)
+ollama pull llama3.2
+python summarize_transcript.py transcripts/video.json --provider ollama --model llama3.2
+
+# Ajustar tamanho das janelas de análise (padrão: 15 min)
+python summarize_transcript.py transcripts/video.json --chunk-minutes 20
+
+# Especificar arquivo de saída
+python summarize_transcript.py transcripts/video.json --output resumo.md
+```
+
+### Argumentos
+
+| Argumento | Descrição | Padrão |
+|---|---|---|
+| `input` | Arquivo JSON da transcrição | — |
+| `--provider` | Provedor LLM: `openai`, `anthropic`, `ollama` | `openai` |
+| `--model` | Modelo a usar | varia por provider |
+| `--chunk-minutes` | Duração de cada janela de análise (min) | `15` |
+| `--output` | Arquivo `.md` de saída | mesmo nome do input |
+
+### Saídas geradas
+
+- `<video>.md` — documento Markdown estruturado com todas as seções
+- `<video>_chunks.json` — resumos parciais por janela de tempo (para reuso)
+
+---
+
 ## Processamento posterior
 
 Os arquivos JSON gerados são adequados para pipelines de NLP. Cada segmento contém `text`, `start`, `duration` e opcionalmente `speaker`, facilitando:
 
-- Resumo automático (LLMs)
+- Resumo automático com `summarize_transcript.py`
 - Análise de sentimento por falante
 - Indexação e busca full-text
 - Geração de atas de reunião

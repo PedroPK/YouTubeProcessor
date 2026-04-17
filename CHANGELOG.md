@@ -7,6 +7,23 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ---
 
+## [Unreleased]
+
+### Adicionado
+
+- `summarize_transcript.py`: geração de resumo estruturado em Markdown via LLM
+  - Estratégia map-reduce: divide a transcrição em janelas de tempo, resume cada janela e sintetiza o documento final
+  - Suporte a três provedores: OpenAI (`gpt-4o-mini`), Anthropic (`claude-3-5-haiku`) e Ollama local (`llama3.2`)
+  - Documento Markdown gerado com: resumo executivo, temas, discussões, decisões, participantes e linha do tempo
+  - Salva resumos parciais por janela em `_chunks.json` para reuso sem reprocessar
+  - Argumento `--chunk-minutes` para controlar o tamanho das janelas de análise (padrão: 15 min)
+
+### Corrigido
+
+- `extract_transcript.py`: regex de extração de `video_id` agora suporta URLs no formato `/live/` (YouTube Live)
+
+---
+
 ## [1.0.0] — 2026-04-17
 
 ### Adicionado
@@ -18,6 +35,7 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   - Saída nos formatos JSON (com metadados), TXT (leitura humana) e SRT (compatível com players)
   - Timestamps por segmento em todos os formatos de saída
   - Obtenção automática do título do vídeo via `yt-dlp`
+  - Suporte a URLs: `watch?v=`, `youtu.be/`, `/embed/`, `/shorts/`
 
 - `diarize_transcript.py`: transcrição offline com identificação de falantes
   - Download de áudio via `yt-dlp` (sem download de vídeo)

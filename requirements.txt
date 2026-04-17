@@ -2,6 +2,11 @@
 youtube-transcript-api>=0.6.0
 yt-dlp>=2024.1.1
 
+# Resumo automático (summarize_transcript.py) — escolha um provider:
+# openai>=1.0.0             # requer OPENAI_API_KEY
+# anthropic>=0.25.0         # requer ANTHROPIC_API_KEY
+# requests>=2.31.0          # para Ollama local (gratuito, sem API key)
+
 # Abordagem 2: Download de áudio + Transcrição + Diarização de falantes
 # (descomentar conforme necessário)
 # openai-whisper>=20231117
