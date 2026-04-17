@@ -48,7 +48,7 @@ def format_timestamp(seconds: float) -> str:
 def extract_video_id(url: str) -> str:
     """Extrai o video_id de diferentes formatos de URL do YouTube."""
     patterns = [
-        r"(?:v=|youtu\.be/|embed/|shorts/)([a-zA-Z0-9_-]{11})",
+        r"(?:v=|youtu\.be/|embed/|shorts/|live/)([a-zA-Z0-9_-]{11})",
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
