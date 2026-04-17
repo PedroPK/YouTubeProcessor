@@ -11,6 +11,7 @@ Três scripts independentes, organizados em camadas:
 | `extract_transcript.py` | Extrai transcrição via legendas nativas do YouTube | `youtube-transcript-api`, `yt-dlp` |
 | `diarize_transcript.py` | Baixa áudio e transcreve com identificação de falantes | `whisper`, `pyannote.audio`, `torch` |
 | `summarize_transcript.py` | Gera resumo estruturado em Markdown via LLM | `openai` / `anthropic` / Ollama local |
+| `generate_podcast.py` | Converte um resumo Markdown em áudio estilo podcast | `edge-tts`, `pydub`, `ffmpeg` |
 
 ---
 
@@ -224,11 +225,93 @@ python summarize_transcript.py transcripts/video.json --output resumo.md
 
 ---
 
+---
+
+## `generate_podcast.py` — Geração de podcast em áudio a partir do resumo
+
+Converte um arquivo Markdown (gerado por `summarize_transcript.py` ou escrito manualmente) em um episódio de podcast em MP3, com dois apresentadores e vozes sintetizadas em português.
+
+**Pipeline:**
+1. LLM transforma o resumo em um roteiro conversacional com dois hosts (JSON)
+2. TTS gera um arquivo de áudio por fala (Microsoft Edge TTS — gratuito)
+3. `pydub` concatena os segmentos com pausas e exporta o MP3 final
+
+**Pré-requisitos:**
+```bash
+pip install edge-tts pydub
+brew install ffmpeg   # macOS
+# ou: apt install ffmpeg  (Ubuntu/Debian)
+```
+
+### Provedores suportados
+
+| Provider TTS | Qualidade | Custo | API Key |
+|---|---|---|---|
+| `edge` (padrão) | Muito boa | Gratuito | Não precisa |
+| `openai` | Excelente | Pago | `OPENAI_API_KEY` |
+
+**Vozes padrão Edge TTS (pt-BR):** `pt-BR-AntonioNeural` (host) e `pt-BR-FranciscaNeural` (co-host)
+
+### Uso
+
+```bash
+# Uso básico (LLM: openai, TTS: edge)
+export OPENAI_API_KEY="sk-..."
+python generate_podcast.py transcripts/video.md
+
+# Com LLM Anthropic e TTS gratuito
+export ANTHROPIC_API_KEY="sk-ant-..."
+python generate_podcast.py transcripts/video.md --provider anthropic
+
+# Escolher vozes diferentes
+python generate_podcast.py transcripts/video.md --voice1 pt-BR-ThalitaNeural --voice2 pt-BR-FranciscaNeural
+
+# Customizar nomes e duração alvo do podcast
+python generate_podcast.py transcripts/video.md --host1 Carlos --host2 Marina --duration-min 10 --duration-max 15
+
+# Apenas gerar o roteiro em JSON (sem áudio)
+python generate_podcast.py transcripts/video.md --script-only
+
+# Usar roteiro já gerado (pula o LLM)
+python generate_podcast.py transcripts/video.md --from-script transcripts/video_podcast_script.json
+
+# Listar vozes Edge disponíveis para português
+python generate_podcast.py transcripts/video.md --list-voices
+```
+
+### Argumentos
+
+| Argumento | Descrição | Padrão |
+|---|---|---|
+| `input` | Arquivo `.md` com o resumo | — |
+| `--provider` | Provider LLM para o roteiro: `openai`, `anthropic`, `ollama` | `openai` |
+| `--model` | Modelo LLM | varia por provider |
+| `--tts` | Provider TTS: `edge`, `openai` | `edge` |
+| `--voice1` | Voz do host principal (Edge ou OpenAI) | `pt-BR-AntonioNeural` |
+| `--voice2` | Voz do co-host (Edge ou OpenAI) | `pt-BR-FranciscaNeural` |
+| `--host1` | Nome do host principal | `Rafael` |
+| `--host2` | Nome do co-host | `Ana` |
+| `--duration-min` | Duração mínima alvo (min) | `8` |
+| `--duration-max` | Duração máxima alvo (min) | `12` |
+| `--pause-ms` | Pausa entre falas em ms | `400` |
+| `--output` | Arquivo MP3 de saída | mesmo nome do input |
+| `--script-only` | Gera apenas o roteiro JSON | — |
+| `--from-script` | Usa JSON existente, pula LLM | — |
+| `--list-voices` | Lista vozes Edge para pt e encerra | — |
+
+### Saídas geradas
+
+- `<video>.mp3` — episódio de podcast completo
+- `<video>_podcast_script.json` — roteiro estruturado com todas as falas
+
+---
+
 ## Processamento posterior
 
 Os arquivos JSON gerados são adequados para pipelines de NLP. Cada segmento contém `text`, `start`, `duration` e opcionalmente `speaker`, facilitando:
 
 - Resumo automático com `summarize_transcript.py`
+- Geração de episódio de podcast com `generate_podcast.py`
 - Análise de sentimento por falante
 - Indexação e busca full-text
 - Geração de atas de reunião

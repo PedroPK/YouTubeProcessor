@@ -11,6 +11,15 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- `generate_podcast.py`: converte resumo Markdown em episódio de podcast em MP3
+  - LLM gera roteiro conversacional com dois hosts em português
+  - TTS Microsoft Edge (gratuito) com vozes `pt-BR-AntonioNeural` e `pt-BR-FranciscaNeural`
+  - Suporte a TTS OpenAI como alternativa paga
+  - `pydub` concatena segmentos com pausas configuráveis e exporta MP3
+  - Modo `--script-only` para gerar apenas o roteiro JSON sem áudio
+  - Modo `--from-script` para reutilizar roteiro já gerado
+  - Argumento `--list-voices` lista todas as vozes Edge TTS para português
+
 - `summarize_transcript.py`: geração de resumo estruturado em Markdown via LLM
   - Estratégia map-reduce: divide a transcrição em janelas de tempo, resume cada janela e sintetiza o documento final
   - Suporte a três provedores: OpenAI (`gpt-4o-mini`), Anthropic (`claude-3-5-haiku`) e Ollama local (`llama3.2`)

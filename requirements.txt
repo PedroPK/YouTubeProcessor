@@ -7,6 +7,11 @@ yt-dlp>=2024.1.1
 # anthropic>=0.25.0         # requer ANTHROPIC_API_KEY
 # requests>=2.31.0          # para Ollama local (gratuito, sem API key)
 
+# Geração de podcast (generate_podcast.py):
+# edge-tts>=6.1.9           # TTS gratuito via Microsoft Edge — sem API key
+# pydub>=0.25.1             # concatenação de segmentos de áudio
+# Sistema: brew install ffmpeg (macOS) | apt install ffmpeg (Ubuntu)
+
 # Abordagem 2: Download de áudio + Transcrição + Diarização de falantes
 # (descomentar conforme necessário)
 # openai-whisper>=20231117
