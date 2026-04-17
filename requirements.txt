@@ -1,0 +1,10 @@
+# Abordagem 1: Transcrição via legendas nativas do YouTube (rápido, sem download)
+youtube-transcript-api>=0.6.0
+yt-dlp>=2024.1.1
+
+# Abordagem 2: Download de áudio + Transcrição + Diarização de falantes
+# (descomentar conforme necessário)
+# openai-whisper>=20231117
+# pyannote.audio>=3.1.0     # requer token HuggingFace gratuito
+# torch>=2.0.0
+# torchaudio>=2.0.0

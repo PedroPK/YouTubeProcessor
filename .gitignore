@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# Transcrições geradas (arquivos de saída)
+transcripts/
+
+# Áudio temporário
+*.wav
+*.mp3
+*.m4a
+*.webm
+
+# Variáveis de ambiente / tokens
+.env
+*.env
+
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
