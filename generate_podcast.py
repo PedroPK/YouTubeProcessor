@@ -314,7 +314,9 @@ def concatenate_audio(audio_paths: list[Path], output_path: Path, pause_ms: int 
     try:
         subprocess.run(
             [ffmpeg, "-y", "-f", "concat", "-safe", "0",
-             "-i", concat_list_path, "-c", "copy", str(output_path)],
+             "-i", concat_list_path,
+             "-acodec", "libmp3lame", "-q:a", "2",
+             str(output_path)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
         )
     finally:
