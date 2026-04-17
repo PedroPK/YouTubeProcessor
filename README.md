@@ -11,7 +11,7 @@ Três scripts independentes, organizados em camadas:
 | `extract_transcript.py` | Extrai transcrição via legendas nativas do YouTube | `youtube-transcript-api`, `yt-dlp` |
 | `diarize_transcript.py` | Baixa áudio e transcreve com identificação de falantes | `whisper`, `pyannote.audio`, `torch` |
 | `summarize_transcript.py` | Gera resumo estruturado em Markdown via LLM | `openai` / `anthropic` / Ollama local |
-| `generate_podcast.py` | Converte um resumo Markdown em áudio estilo podcast | `edge-tts`, `pydub`, `ffmpeg` |
+| `generate_podcast.py` | Converte um resumo Markdown em áudio estilo podcast | `edge-tts`, `imageio-ffmpeg`, `audioop-lts` |
 
 ---
 
@@ -234,14 +234,14 @@ Converte um arquivo Markdown (gerado por `summarize_transcript.py` ou escrito ma
 **Pipeline:**
 1. LLM transforma o resumo em um roteiro conversacional com dois hosts (JSON)
 2. TTS gera um arquivo de áudio por fala (Microsoft Edge TTS — gratuito)
-3. `pydub` concatena os segmentos com pausas e exporta o MP3 final
+3. `ffmpeg` concatena os segmentos com pausas e exporta o MP3 final
 
 **Pré-requisitos:**
 ```bash
-pip install edge-tts pydub
-brew install ffmpeg   # macOS
-# ou: apt install ffmpeg  (Ubuntu/Debian)
+pip install edge-tts imageio-ffmpeg audioop-lts
 ```
+
+> `imageio-ffmpeg` inclui um binário pré-compilado do ffmpeg para todas as plataformas — sem necessidade de `brew install ffmpeg`. Em Python 3.13+, `audioop-lts` substitui o módulo `audioop` removido da biblioteca padrão.
 
 ### Provedores suportados
 

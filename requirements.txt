@@ -9,7 +9,8 @@ yt-dlp>=2024.1.1
 
 # Geração de podcast (generate_podcast.py):
 # edge-tts>=6.1.9           # TTS gratuito via Microsoft Edge — sem API key
-# pydub>=0.25.1             # concatenação de segmentos de áudio
+# audioop-lts>=0.2.1        # substituto do audioop removido no Python 3.13+ (requerido pelo pydub)
+# imageio-ffmpeg>=0.5.1     # ffmpeg pré-compilado embutido (alternativa ao brew install ffmpeg)
 # Sistema: brew install ffmpeg (macOS) | apt install ffmpeg (Ubuntu)
 
 # Abordagem 2: Download de áudio + Transcrição + Diarização de falantes

@@ -8,7 +8,7 @@ Pipeline:
   1. Lê o arquivo Markdown com o resumo
   2. Usa LLM para converter em roteiro de podcast (JSON com falas por apresentador)
   3. Para cada fala, gera áudio via TTS (Microsoft Edge TTS — gratuito e sem API key)
-  4. Concatena os segmentos com pydub, adiciona pausa entre falas
+  4. Concatena os segmentos com ffmpeg, adiciona pausa entre falas
   5. Exporta o episódio final em MP3
 
 Provedores TTS suportados:
@@ -22,7 +22,7 @@ Vozes padrão (Edge TTS, pt-BR):
 Outros provedores LLM suportados para gerar o roteiro: openai, anthropic, ollama
 
 Pré-requisitos:
-  pip install edge-tts pydub
+  pip install edge-tts imageio-ffmpeg audioop-lts
   brew install ffmpeg   (macOS)  |  apt install ffmpeg  (Ubuntu)
 
 Uso:
@@ -130,11 +130,12 @@ def llm_call(provider: str, model: str, system: str, user: str) -> str:
         payload = {
             "model": model or "llama3.2",
             "stream": False,
+            "format": "json",
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "options": {"temperature": 0.7},
         }
         try:
-            resp = requests.post(url, json=payload, timeout=300)
+            resp = requests.post(url, json=payload, timeout=900)
             resp.raise_for_status()
         except Exception as e:
             raise RuntimeError(f"Ollama erro: {e}\n  Certifique-se que está rodando: ollama serve")
@@ -145,10 +146,40 @@ def llm_call(provider: str, model: str, system: str, user: str) -> str:
 
 def parse_script_json(raw: str) -> dict:
     raw = raw.strip()
+    # Strip markdown code fences if present
     if raw.startswith("```"):
         lines = raw.split("\n")
         raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    return json.loads(raw)
+    # Try direct parse first
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # Extract the first complete JSON object using brace matching
+    start = raw.find("{")
+    if start == -1:
+        raise ValueError(f"Nenhum JSON encontrado na resposta do LLM:\n{raw[:500]}")
+    depth = 0
+    in_str = False
+    escape = False
+    for i, ch in enumerate(raw[start:], start):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_str:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_str = not in_str
+            continue
+        if not in_str:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return json.loads(raw[start:i + 1])
+    raise ValueError(f"JSON incompleto na resposta do LLM:\n{raw[:500]}")
 
 
 # ---------------------------------------------------------------------------
@@ -237,25 +268,58 @@ async def list_edge_voices_pt() -> None:
 # Concatenação de áudio
 # ---------------------------------------------------------------------------
 
-def concatenate_audio(audio_paths: list[Path], output_path: Path, pause_ms: int = 400) -> None:
-    """Une todos os segmentos de áudio com uma pausa entre falas."""
+def _get_ffmpeg_binary() -> str:
+    """Retorna o caminho do binário ffmpeg: do sistema (PATH) ou do bundle imageio-ffmpeg."""
+    import shutil
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
     try:
-        from pydub import AudioSegment
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
     except ImportError:
-        print("  Instalando pydub...")
-        os.system(f"{sys.executable} -m pip install pydub -q")
-        from pydub import AudioSegment
+        raise RuntimeError(
+            "ffmpeg não encontrado.\n"
+            "  Instale com: brew install ffmpeg (macOS) | apt install ffmpeg (Ubuntu)\n"
+            "  Ou adicione ao venv: pip install imageio-ffmpeg"
+        )
 
-    silence = AudioSegment.silent(duration=pause_ms)
-    combined = AudioSegment.empty()
 
-    for i, path in enumerate(audio_paths):
-        seg = AudioSegment.from_file(str(path), format="mp3")
-        combined += seg
-        if i < len(audio_paths) - 1:
-            combined += silence
+def concatenate_audio(audio_paths: list[Path], output_path: Path, pause_ms: int = 400) -> None:
+    """Une todos os segmentos de áudio usando ffmpeg diretamente (não requer ffprobe)."""
+    import subprocess
+    import tempfile as _tempfile
 
-    combined.export(str(output_path), format="mp3", bitrate="128k")
+    ffmpeg = _get_ffmpeg_binary()
+
+    # Gera um segmento de silêncio em MP3
+    with _tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        silence_path = f.name
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi",
+         "-i", f"anullsrc=channel_layout=stereo:sample_rate=44100",
+         "-t", str(pause_ms / 1000),
+         "-q:a", "9", "-acodec", "libmp3lame", silence_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+
+    # Cria arquivo de lista para o concat demuxer do ffmpeg
+    with _tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        concat_list_path = f.name
+        for i, path in enumerate(audio_paths):
+            f.write(f"file '{path}'\n")
+            if i < len(audio_paths) - 1:
+                f.write(f"file '{silence_path}'\n")
+
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-f", "concat", "-safe", "0",
+             "-i", concat_list_path, "-c", "copy", str(output_path)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+        )
+    finally:
+        os.unlink(concat_list_path)
+        os.unlink(silence_path)
 
 
 # ---------------------------------------------------------------------------
@@ -320,9 +384,16 @@ def main() -> None:
         markdown_content = input_path.read_text(encoding="utf-8")
 
         # Limita o tamanho para caber no contexto do LLM
-        max_chars = 40_000
+        # Modelos locais (ollama) são mais lentos: usa limite menor
+        # Modelos 1B (ex: llama3.2:1b) precisam de contexto ainda menor
+        if args.provider == "ollama":
+            max_chars = 4_000
+        else:
+            max_chars = 40_000
         if len(markdown_content) > max_chars:
             markdown_content = markdown_content[:max_chars] + "\n\n[...conteúdo truncado...]"
+            if args.provider == "ollama":
+                print(f"  (resumo truncado para {max_chars} chars para melhorar velocidade no modelo local)")
 
         print(f"\nArquivo: {input_path.name}")
         print(f"Provider LLM: {args.provider} | TTS: {args.tts}")

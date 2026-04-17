@@ -15,7 +15,9 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   - LLM gera roteiro conversacional com dois hosts em português
   - TTS Microsoft Edge (gratuito) com vozes `pt-BR-AntonioNeural` e `pt-BR-FranciscaNeural`
   - Suporte a TTS OpenAI como alternativa paga
-  - `pydub` concatena segmentos com pausas configuráveis e exporta MP3
+  - `ffmpeg` (via `imageio-ffmpeg` bundled) concatena segmentos com pausas configuráveis e exporta MP3
+  - `imageio-ffmpeg` fornece binário pré-compilado do ffmpeg — sem necessidade de instalação via brew/apt
+  - `audioop-lts` garante compatibilidade com Python 3.13+ (módulo `audioop` removido da stdlib)
   - Modo `--script-only` para gerar apenas o roteiro JSON sem áudio
   - Modo `--from-script` para reutilizar roteiro já gerado
   - Argumento `--list-voices` lista todas as vozes Edge TTS para português
