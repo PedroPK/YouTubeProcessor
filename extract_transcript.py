@@ -26,7 +26,7 @@ import json
 import os
 import re
 import sys
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -207,7 +207,9 @@ def main() -> None:
     }
 
     # Salva arquivos
-    output_dir = Path(args.output_dir)
+    date_str = date.today().strftime("%Y.%m.%d")
+    subdir_name = sanitize_filename(f"{date_str} - {title[:60]}")
+    output_dir = Path(args.output_dir) / subdir_name
     output_dir.mkdir(parents=True, exist_ok=True)
     base_name = sanitize_filename(f"{video_id}_{title[:50]}")
     base_path = output_dir / base_name

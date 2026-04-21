@@ -40,7 +40,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from datetime import timedelta
+from datetime import date, timedelta
 
 
 def sanitize_filename(name: str) -> str:
@@ -58,7 +58,7 @@ def format_timestamp(seconds: float) -> str:
 
 
 def extract_video_id(url: str) -> str:
-    match = re.search(r"(?:v=|youtu\.be/|embed/|shorts/)([a-zA-Z0-9_-]{11})", url)
+    match = re.search(r"(?:v=|youtu\.be/|embed/|shorts/|live/)([a-zA-Z0-9_-]{11})", url)
     if match:
         return match.group(1)
     raise ValueError(f"Não foi possível extrair o video_id da URL: {url}")
@@ -203,13 +203,18 @@ def main() -> None:
         sys.exit(1)
 
     video_id = extract_video_id(args.url)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = output_dir / f"{video_id}_audio"
+    base_output_dir = Path(args.output_dir)
+    base_output_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = base_output_dir / f"{video_id}_audio"
 
     print(f"\nVideo ID: {video_id}")
     print("Baixando áudio...")
     audio_file, title = download_audio(args.url, audio_path)
+
+    date_str = date.today().strftime("%Y.%m.%d")
+    subdir_name = sanitize_filename(f"{date_str} - {title[:60]}")
+    output_dir = base_output_dir / subdir_name
+    output_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Áudio: {audio_file} ({audio_file.stat().st_size / 1_000_000:.1f} MB)")
 
     print(f"\nTranscrevendo com Whisper ({args.model})...")

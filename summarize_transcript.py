@@ -174,7 +174,7 @@ def call_ollama(prompt_system: str, prompt_user: str, model: str) -> str:
     url = os.environ.get("OLLAMA_HOST", "http://localhost:11434") + "/api/chat"
     payload = {
         "model": model,
-        "stream": False,
+        "stream": True,
         "messages": [
             {"role": "system", "content": prompt_system},
             {"role": "user", "content": prompt_user},
@@ -182,14 +182,24 @@ def call_ollama(prompt_system: str, prompt_user: str, model: str) -> str:
         "options": {"temperature": 0.3},
     }
     try:
-        resp = requests.post(url, json=payload, timeout=300)
+        resp = requests.post(url, json=payload, stream=True, timeout=(30, None))
         resp.raise_for_status()
     except requests.exceptions.ConnectionError:
         raise RuntimeError(
             "Ollama não está rodando. Inicie com: ollama serve\n"
             "  E baixe o modelo com: ollama pull llama3.2"
         )
-    return resp.json()["message"]["content"].strip()
+    # Acumula tokens do stream — evita timeout de leitura em respostas longas
+    result = []
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        chunk = json.loads(line)
+        token = chunk.get("message", {}).get("content", "")
+        result.append(token)
+        if chunk.get("done"):
+            break
+    return "".join(result).strip()
 
 
 def call_anthropic(prompt_system: str, prompt_user: str, model: str) -> str:
@@ -258,8 +268,8 @@ def main() -> None:
                         help="Provedor de LLM (padrão: openai)")
     parser.add_argument("--model", default=None,
                         help="Modelo a usar (padrão: varia por provider)")
-    parser.add_argument("--chunk-minutes", type=int, default=15,
-                        help="Tamanho de cada janela de análise em minutos (padrão: 15)")
+    parser.add_argument("--chunk-minutes", type=int, default=None,
+                        help="Tamanho de cada janela de análise em minutos (padrão: 15, ou 5 para ollama)")
     parser.add_argument("--output", default=None,
                         help="Arquivo de saída .md (padrão: mesmo nome do input)")
     args = parser.parse_args()
@@ -267,6 +277,12 @@ def main() -> None:
     # Resolve modelo padrão
     _, default_model = PROVIDERS[args.provider]
     model = args.model or default_model
+
+    # Chunk size padrão menor para ollama (modelos locais são mais lentos)
+    if args.chunk_minutes is None:
+        chunk_minutes = 5 if args.provider == "ollama" else 15
+    else:
+        chunk_minutes = args.chunk_minutes
 
     # Lê transcrição
     input_path = Path(args.input)
@@ -287,8 +303,8 @@ def main() -> None:
     print(f"Provedor: {args.provider} | Modelo: {model}")
 
     # Divide em chunks
-    chunks = build_chunks(segments, args.chunk_minutes)
-    print(f"\nDividida em {len(chunks)} janelas de ~{args.chunk_minutes} min cada\n")
+    chunks = build_chunks(segments, chunk_minutes)
+    print(f"\nDividida em {len(chunks)} janelas de ~{chunk_minutes} min cada\n")
 
     # Passo 1: resume cada chunk
     partial_summaries = []
