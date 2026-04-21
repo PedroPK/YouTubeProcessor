@@ -26,6 +26,7 @@ import argparse
 import re
 import sys
 import subprocess
+import time
 from datetime import date
 from pathlib import Path
 
@@ -41,16 +42,41 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"Não foi possível extrair o video_id da URL: {url}")
 
 
-def banner(text: str) -> None:
+def fmt_duration(seconds: float) -> str:
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m{s:02d}s"
+
+
+def progress_bar(current: int, total: int, width: int = 28) -> str:
+    filled = int(width * current / total)
+    bar = "█" * filled + "░" * (width - filled)
+    pct = int(100 * current / total)
+    return f"[{bar}] {pct:3d}%"
+
+
+def banner(step: int, total_steps: int, label: str, overall_elapsed: float) -> None:
+    overall_bar = progress_bar(step - 1, total_steps)
     print(f"\n{'═' * 60}")
-    print(f"  {text}")
+    print(f"  Passo {step}/{total_steps} — {label}")
+    print(f"  Geral: {overall_bar}  ⏱ {fmt_duration(overall_elapsed)} decorrido")
     print(f"{'═' * 60}")
 
 
-def run(label: str, cmd: list[str]) -> int:
-    banner(label)
+def run_step(step: int, total_steps: int, label: str, cmd: list[str],
+            overall_start: float) -> tuple[int, float]:
+    banner(step, total_steps, label, time.time() - overall_start)
+    t0 = time.time()
     result = subprocess.run(cmd, cwd=Path(__file__).parent)
-    return result.returncode
+    elapsed = time.time() - t0
+    status = "✓" if result.returncode == 0 else "✗"
+    print(f"\n  {status} Passo {step} concluído em {fmt_duration(elapsed)}")
+    return result.returncode, elapsed
 
 
 def main() -> None:
@@ -80,38 +106,56 @@ def main() -> None:
         print(f"ERRO: {e}")
         sys.exit(1)
 
+    # Determina quantos passos serão executados
+    total_steps = 1
+    if not args.skip_summary:
+        total_steps += 1
+    if not args.skip_summary and not args.skip_podcast:
+        total_steps += 1
+
+    timings: dict[str, float] = {}
+    overall_start = time.time()
+
+    print(f"\n{'═' * 60}")
+    print(f"  PIPELINE YouTubeProcessor  —  {total_steps} passo(s)")
+    print(f"  Vídeo: {video_id}")
+    print(f"  Modelo: {args.model}  |  Idioma: {args.lang}")
+    print(f"{'═' * 60}")
+
     # ── Passo 1: Transcrição ──────────────────────────────────────────
-    rc = run("PASSO 1/3 — Extraindo transcrição", [
+    rc, t = run_step(1, total_steps, "Extraindo transcrição", [
         python, str(script_dir / "extract_transcript.py"),
         args.url,
         "--lang", args.lang,
         "--output-dir", str(base_dir),
-    ])
+    ], overall_start)
+    timings["Transcrição"] = t
     if rc != 0:
         print(f"\nERRO no passo 1 (exit code {rc}). Abortando.")
         sys.exit(rc)
 
-    # Localiza o JSON gerado (mesmo padrão de nomenclatura do extract_transcript.py)
+    # Localiza o JSON gerado
     date_str = date.today().strftime("%Y.%m.%d")
     matches = sorted(base_dir.glob(f"{date_str} - */{video_id}_*.json"))
     if not matches:
         print(f"\nERRO: JSON não encontrado em {base_dir}/{date_str} - */")
         sys.exit(1)
     json_path = matches[0]
-    print(f"\n  → JSON: {json_path}")
+    print(f"  → {json_path}")
 
     if args.skip_summary:
-        banner("PIPELINE CONCLUÍDO (só transcrição)")
-        print(f"  Transcrição: {json_path}")
+        _print_summary(timings, overall_start, total_steps,
+                       json_path=json_path)
         sys.exit(0)
 
     # ── Passo 2: Resumo ───────────────────────────────────────────────
-    rc = run("PASSO 2/3 — Gerando resumo com Ollama", [
+    rc, t = run_step(2, total_steps, "Gerando resumo com Ollama", [
         python, str(script_dir / "summarize_transcript.py"),
         str(json_path),
         "--provider", "ollama",
         "--model", args.model,
-    ])
+    ], overall_start)
+    timings["Resumo"] = t
     if rc != 0:
         print(f"\nERRO no passo 2 (exit code {rc}). Abortando.")
         sys.exit(rc)
@@ -120,32 +164,55 @@ def main() -> None:
     if not md_path.exists():
         print(f"\nERRO: Markdown não encontrado em: {md_path}")
         sys.exit(1)
-    print(f"\n  → Resumo: {md_path}")
+    print(f"  → {md_path}")
 
     if args.skip_podcast:
-        banner("PIPELINE CONCLUÍDO (sem podcast)")
-        print(f"  Transcrição: {json_path}")
-        print(f"  Resumo:      {md_path}")
+        _print_summary(timings, overall_start, total_steps,
+                       json_path=json_path, md_path=md_path)
         sys.exit(0)
 
     # ── Passo 3: Podcast ──────────────────────────────────────────────
-    rc = run("PASSO 3/3 — Gerando podcast com Edge TTS", [
+    rc, t = run_step(3, total_steps, "Gerando podcast com Edge TTS", [
         python, str(script_dir / "generate_podcast.py"),
         str(md_path),
         "--provider", "ollama",
         "--model", args.model,
         "--tts", "edge",
-    ])
+    ], overall_start)
+    timings["Podcast"] = t
     if rc != 0:
         print(f"\nERRO no passo 3 (exit code {rc}).")
         sys.exit(rc)
 
     mp3_path = md_path.with_suffix(".mp3")
+    _print_summary(timings, overall_start, total_steps,
+                   json_path=json_path, md_path=md_path, mp3_path=mp3_path)
 
-    banner("PIPELINE CONCLUÍDO")
-    print(f"  Transcrição: {json_path}")
-    print(f"  Resumo:      {md_path}")
-    print(f"  Podcast:     {mp3_path}")
+
+def _print_summary(
+    timings: dict[str, float],
+    overall_start: float,
+    total_steps: int,
+    json_path: Path | None = None,
+    md_path: Path | None = None,
+    mp3_path: Path | None = None,
+) -> None:
+    total = time.time() - overall_start
+    bar = progress_bar(total_steps, total_steps)
+    print(f"\n{'═' * 60}")
+    print(f"  PIPELINE CONCLUÍDO  {bar}  ⏱ {fmt_duration(total)} total")
+    print(f"{'═' * 60}")
+    print(f"  Tempos por etapa:")
+    for name, t in timings.items():
+        pct = int(t / total * 100) if total > 0 else 0
+        print(f"    {name:<15} {fmt_duration(t):>8}  ({pct:3d}%)")
+    print()
+    if json_path:
+        print(f"  Transcrição: {json_path}")
+    if md_path:
+        print(f"  Resumo:      {md_path}")
+    if mp3_path:
+        print(f"  Podcast:     {mp3_path}")
     print()
 
 
