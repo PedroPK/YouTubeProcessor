@@ -40,6 +40,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -128,18 +129,32 @@ def llm_call(provider: str, model: str, system: str, user: str) -> str:
             import requests
         url = os.environ.get("OLLAMA_HOST", "http://localhost:11434") + "/api/chat"
         payload = {
-            "model": model or "llama3.2",
-            "stream": False,
-            "format": "json",
+            "model": model or "llama3.1",
+            "stream": True,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "options": {"temperature": 0.7},
         }
         try:
-            resp = requests.post(url, json=payload, timeout=900)
+            resp = requests.post(url, json=payload, stream=True, timeout=(30, None))
             resp.raise_for_status()
         except Exception as e:
             raise RuntimeError(f"Ollama erro: {e}\n  Certifique-se que está rodando: ollama serve")
-        return resp.json()["message"]["content"].strip()
+        result = []
+        chars = 0
+        t0_stream = time.time()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            chunk = json.loads(line)
+            token = chunk.get("message", {}).get("content", "")
+            result.append(token)
+            chars += len(token)
+            elapsed = time.time() - t0_stream
+            print(f"\r  {chars:5d} chars recebidos  ⏱ {elapsed:.0f}s ", end="", flush=True)
+            if chunk.get("done"):
+                break
+        print()  # quebra de linha após o contador
+        return "".join(result).strip()
 
     raise ValueError(f"Provider desconhecido: {provider}")
 
@@ -211,10 +226,16 @@ async def tts_edge_batch(segments: list[dict], voice_map: dict, tmp_dir: Path) -
 
     # Processa em lotes para não sobrecarregar a API
     batch_size = 5
+    t0_tts = time.time()
     for i in range(0, len(tasks), batch_size):
         batch = tasks[i:i + batch_size]
         await asyncio.gather(*batch)
-        print(f"  Segmentos {i+1}–{min(i+batch_size, len(tasks))} de {len(tasks)} gerados")
+        done = min(i + batch_size, len(tasks))
+        filled = int(done / len(tasks) * 28)
+        bar = "█" * filled + "░" * (28 - filled)
+        pct = int(done / len(tasks) * 100)
+        elapsed = time.time() - t0_tts
+        print(f"  [{bar}] {pct:3d}%  {done}/{len(tasks)} segmentos  ⏱ {elapsed:.0f}s")
 
     return paths
 
@@ -402,7 +423,8 @@ def main() -> None:
         print(f"Hosts: {args.host1} ({args.voice1}) e {args.host2} ({args.voice2})")
         print(f"Duração alvo: {args.duration_min}–{args.duration_max} min\n")
 
-        print("Gerando roteiro de podcast via LLM...", end=" ", flush=True)
+        print("Gerando roteiro de podcast via LLM...")
+        t0_script = time.time()
         prompt = SCRIPT_USER_TEMPLATE.format(
             host1=args.host1,
             host2=args.host2,
@@ -411,8 +433,9 @@ def main() -> None:
             markdown_content=markdown_content,
         )
         raw = llm_call(args.provider, args.model, SCRIPT_SYSTEM, prompt)
+        script_time = time.time() - t0_script
         podcast_script = parse_script_json(raw)
-        print("ok")
+        print(f"  ✓ roteiro concluído em {script_time:.0f}s")
 
         with open(script_path, "w", encoding="utf-8") as f:
             json.dump(podcast_script, f, ensure_ascii=False, indent=2)

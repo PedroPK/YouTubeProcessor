@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import textwrap
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -78,28 +79,46 @@ def build_chunks(segments: list[dict], chunk_minutes: int) -> list[dict]:
 # Prompts
 # ---------------------------------------------------------------------------
 
-CHUNK_SYSTEM = """Você é um assistente especializado em análise e síntese de transcrições.
-Extraia as informações relevantes do trecho fornecido de forma objetiva e estruturada.
-Responda SEMPRE em português do Brasil."""
+CHUNK_SYSTEM = """Você é um especialista em documentação de reuniões, audiências públicas e debates.
+Sua missão é produzir uma análise DETALHADA e FIEL do trecho de transcrição fornecido.
+REGRAS OBRIGATÓRIAS:
+- Use sempre o nome real dos interlocutores (corrija erros óbvios de transcrição, ex: "inúrupta" → "ininterrupta").
+- Atribua cada argumento ao seu interlocutor: "Fulano defendeu que...", "Beltrana respondeu que...".
+- Preserve réplicas e tréplicas — não colapse uma troca em uma única frase.
+- Seja específico: cite dados, valores, datas e nomes de projetos/leis mencionados.
+- Responda SEMPRE em português do Brasil."""
 
-CHUNK_USER_TEMPLATE = """Analise o trecho abaixo (de {start} a {end}) de uma transcrição intitulada "{title}".
+CHUNK_USER_TEMPLATE = """Analise o trecho abaixo (de {start} a {end}) da transcrição "{title}".
 
-Extraia e organize em JSON com as seguintes chaves:
-- "topicos": lista de strings com os temas e tópicos abordados
-- "discussoes": lista de strings descrevendo os principais pontos debatidos
-- "decisoes": lista de strings com decisões, conclusões ou encaminhamentos (vazio se não houver)
-- "personagens": lista de strings com nomes de pessoas mencionadas ou identificadas como participantes (vazio se não identificado)
-- "resumo": string com um parágrafo de resumo do trecho
+Produzir uma análise detalhada com as seguintes seções:
 
-Trecho:
+### Participantes neste trecho
+Liste cada pessoa que falou: **Nome** — cargo ou papel — posição/argumento central.
+
+### Debate e Posições
+Para cada ponto discutido, descreva quem defendeu o quê, em ordem cronológica.
+Incorpore réplicas e contra-argumentos com atribuição explícita de nome.
+Seja específico: mencione dados concretos, valores, projetos, leis citadas.
+
+### Decisões e Encaminhamentos
+Liste explicitamente quaisquer decisões, votações ou próximos passos mencionados.
+Se não houver nenhum neste trecho, escreva: "Nenhum neste trecho."
+
+Trecho ({start}–{end}):
 {text}
 
-Responda APENAS com o JSON, sem texto adicional."""
+Responda SOMENTE com a análise nas três seções acima, sem introdução nem conclusão."""
 
-SYNTHESIS_SYSTEM = """Você é um assistente especializado em síntese de documentos.
-Produza documentos bem estruturados, claros e objetivos em português do Brasil."""
+SYNTHESIS_SYSTEM = """Você é um especialista em documentação de reuniões e audiências públicas.
+Produza documentos ricos, detalhados e bem estruturados em português do Brasil.
+REGRAS OBRIGATÓRIAS:
+- Preserve TODOS os participantes identificados e suas posições específicas.
+- Nas seções de debate, mostre os argumentos de cada lado com atribuição de fala.
+- Inclua réplicas e tréplicas — não collapse o debate em uma frase genérica.
+- Cite diretamente quando houver frases marcantes.
+- Seja tão detalhado quanto o material permite."""
 
-SYNTHESIS_USER_TEMPLATE = """Com base nos resumos parciais abaixo, gere um documento Markdown completo e estruturado
+SYNTHESIS_USER_TEMPLATE = """Com base nos resumos parciais abaixo, gere um documento Markdown DETALHADO e COMPLETO
 para a transcrição de: "{title}" (duração total: {duration}).
 
 Resumos parciais por trecho (em ordem cronológica):
@@ -110,27 +129,29 @@ O documento final deve conter as seguintes seções, nesta ordem:
 # {title}
 
 ## Metadados
-(tabela com: Fonte, Data, Duração, Idioma, Segmentos)
+{metadata_table}
 
 ## Resumo Executivo
-(2-4 parágrafos sintetizando o conteúdo geral)
+(3-5 parágrafos sintetizando o conteúdo; mencione os principais participantes e suas posições)
+
+## Participantes
+(para cada participante identificado: nome, cargo/organização e posição/argumento principal — use tabela ou lista estruturada)
 
 ## Temas e Tópicos Abordados
-(lista estruturada dos principais temas, agrupados se houver relação)
+(lista hierárquica dos temas; agrupe subtópicos relacionados)
 
-## Discussões e Debates
-(descrição dos principais pontos debatidos, argumentos e posições)
+## Debates e Posições
+(para cada ponto de debate: descreva a posição de cada interlocutor, incluindo réplicas e tréplicas;
+use subseções por tema de debate; atribua cada argumento ao seu interlocutor pelo nome)
 
 ## Decisões e Encaminhamentos
-(lista de decisões, conclusões ou próximos passos identificados; se nenhum, indicar)
-
-## Participantes Mencionados
-(lista de nomes identificados; se nenhum, omitir a seção)
+(lista numerada de decisões, conclusões ou próximos passos; se nenhum, indicar)
 
 ## Linha do Tempo
-(tabela com colunas: Horário | Tópico — mapeando os trechos aos temas identificados)
+(tabela: Horário | Interlocutor | Tópico — um registro por evento relevante)
 
 ---
+IMPORTANTE: Não simplifique em excesso. Preserve a riqueza dos debates e as atribuições de fala.
 Responda APENAS com o Markdown, sem texto adicional antes ou depois."""
 
 
@@ -228,7 +249,7 @@ def call_anthropic(prompt_system: str, prompt_user: str, model: str) -> str:
 
 PROVIDERS = {
     "openai": (call_openai, "gpt-4o-mini"),
-    "ollama": (call_ollama, "llama3.2"),
+    "ollama": (call_ollama, "llama3.1"),
     "anthropic": (call_anthropic, "claude-3-5-haiku-20241022"),
 }
 
@@ -242,23 +263,9 @@ def llm_call(provider: str, model: str, prompt_system: str, prompt_user: str) ->
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def parse_chunk_json(raw: str) -> dict:
-    """Extrai JSON da resposta do LLM (tolerante a markdown code blocks)."""
-    raw = raw.strip()
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        # Fallback: retorna estrutura mínima com o texto bruto
-        return {
-            "topicos": [],
-            "discussoes": [raw[:500]],
-            "decisoes": [],
-            "personagens": [],
-            "resumo": raw[:300],
-        }
+def parse_chunk_narrative(raw: str) -> dict:
+    """Envolve a narrativa livre do chunk em um dict uniforme."""
+    return {"narrative": raw.strip()}
 
 
 def main() -> None:
@@ -278,9 +285,10 @@ def main() -> None:
     _, default_model = PROVIDERS[args.provider]
     model = args.model or default_model
 
-    # Chunk size padrão menor para ollama (modelos locais são mais lentos)
+    # Chunk size padrão: ollama usa janelas maiores (10 min) para ter contexto
+    # suficiente para identificar interlocutores e trocas de debate
     if args.chunk_minutes is None:
-        chunk_minutes = 5 if args.provider == "ollama" else 15
+        chunk_minutes = 10 if args.provider == "ollama" else 15
     else:
         chunk_minutes = args.chunk_minutes
 
@@ -308,11 +316,21 @@ def main() -> None:
 
     # Passo 1: resume cada chunk
     partial_summaries = []
+    chunk_times: list[float] = []
+    chunks_start = time.time()
     for i, chunk in enumerate(chunks, 1):
         start_fmt = format_ts(chunk["start"])
         end_fmt = format_ts(chunk["end"])
-        print(f"  [{i:02d}/{len(chunks):02d}] Analisando {start_fmt} → {end_fmt} ...", end=" ", flush=True)
+        filled = int((i - 1) / len(chunks) * 28)
+        bar = "█" * filled + "░" * (28 - filled)
+        pct = int((i - 1) / len(chunks) * 100)
+        elapsed = time.time() - chunks_start
+        avg = elapsed / (i - 1) if i > 1 else 0
+        eta = avg * (len(chunks) - i + 1)
+        eta_str = f"ETA {int(eta // 60):02d}:{int(eta % 60):02d}" if avg > 0 else "ETA --:--"
+        print(f"  [{i:02d}/{len(chunks):02d}] [{bar}] {pct:3d}%  {start_fmt}→{end_fmt}  {eta_str}", flush=True)
 
+        t0 = time.time()
         prompt = CHUNK_USER_TEMPLATE.format(
             start=start_fmt,
             end=end_fmt,
@@ -320,37 +338,27 @@ def main() -> None:
             text=chunk["text"],
         )
         raw = llm_call(args.provider, model, CHUNK_SYSTEM, prompt)
-        parsed = parse_chunk_json(raw)
+        parsed = parse_chunk_narrative(raw)
         parsed["_start"] = start_fmt
         parsed["_end"] = end_fmt
         partial_summaries.append(parsed)
-        print("ok")
+        elapsed_chunk = time.time() - t0
+        chunk_times.append(elapsed_chunk)
+        print(f"        ✓ concluído em {elapsed_chunk:.0f}s")
+
+    total_chunks_time = time.time() - chunks_start
+    avg_chunk = total_chunks_time / len(chunks) if chunks else 0
+    print(f"\n  [{'█' * 28}] 100%  {len(chunks)} janelas em {int(total_chunks_time // 60):02d}:{int(total_chunks_time % 60):02d}  (média {avg_chunk:.0f}s/janela)")
 
     # Serializa resumos parciais para o prompt de síntese
     summaries_text = ""
     for ps in partial_summaries:
-        summaries_text += f"\n### Trecho {ps['_start']} – {ps['_end']}\n"
-        summaries_text += f"**Resumo:** {ps.get('resumo', '')}\n"
-        if ps.get("topicos"):
-            summaries_text += f"**Tópicos:** {', '.join(ps['topicos'])}\n"
-        if ps.get("discussoes"):
-            for d in ps["discussoes"]:
-                summaries_text += f"- {d}\n"
-        if ps.get("decisoes"):
-            summaries_text += f"**Decisões:** {'; '.join(ps['decisoes'])}\n"
-        if ps.get("personagens"):
-            summaries_text += f"**Participantes:** {', '.join(ps['personagens'])}\n"
-
+        summaries_text += f"\n---\n## Trecho {ps['_start']} – {ps['_end']}\n"
+        summaries_text += ps.get("narrative", "") + "\n"
     # Passo 2: síntese final
-    print(f"\nSintetizando documento final ...", end=" ", flush=True)
-    synthesis_prompt = SYNTHESIS_USER_TEMPLATE.format(
-        title=title,
-        duration=duration_str,
-        partial_summaries=summaries_text,
-    )
-    # Adiciona metadados ao prompt de síntese
-    synthesis_prompt = synthesis_prompt.replace(
-        "(tabela com: Fonte, Data, Duração, Idioma, Segmentos)",
+    print(f"\nSintetizando documento final ...", flush=True)
+    t0_synth = time.time()
+    metadata_table = (
         f"| Campo | Valor |\n|---|---|\n"
         f"| Fonte | [{meta['url']}]({meta['url']}) |\n"
         f"| Idioma | {meta.get('language', '?')} |\n"
@@ -358,9 +366,16 @@ def main() -> None:
         f"| Segmentos | {meta['segment_count']} |\n"
         f"| Video ID | {meta['video_id']} |"
     )
+    synthesis_prompt = SYNTHESIS_USER_TEMPLATE.format(
+        title=title,
+        duration=duration_str,
+        partial_summaries=summaries_text,
+        metadata_table=metadata_table,
+    )
 
     markdown = llm_call(args.provider, model, SYNTHESIS_SYSTEM, synthesis_prompt)
-    print("ok")
+    synth_time = time.time() - t0_synth
+    print(f"  ✓ síntese concluída em {synth_time:.0f}s")
 
     # Salva output
     if args.output:
