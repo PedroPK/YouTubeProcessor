@@ -48,15 +48,18 @@ from pathlib import Path
 # Constantes
 # ---------------------------------------------------------------------------
 
-SCRIPT_SYSTEM = """Você é um roteirista especializado em podcasts brasileiros de análise política e econômica.
-Crie roteiros naturais, conversacionais e envolventes em português do Brasil."""
+MIN_WORDS_PER_FALA = 80  # falas abaixo disto serão expandidas automaticamente
+
+SCRIPT_SYSTEM = """Você é um roteirista sênior especializado em podcasts brasileiros de análise política e econômica.
+Crie roteiros RICOS, DETALHADOS e envolventes em português do Brasil.
+CADA FALA DEVE SER UM DISCURSO COMPLETO E DESENVOLVIDO, nunca uma frase solta."""
 
 SCRIPT_USER_TEMPLATE = """Transforme o resumo abaixo em um roteiro de podcast com dois apresentadores:
 
-- **{host1}** (host principal): conduz a conversa, apresenta os temas, faz perguntas
-- **{host2}** (co-host / analista): aprofunda os pontos, dá contexto, traz perspectiva crítica
+- **{host1}** (host principal): conduz a conversa, apresenta os temas, contextualiza, faz perguntas aprofundadas
+- **{host2}** (co-host / analista): desenvolve os pontos com profundidade, traz dados, perspectiva crítica e nuances
 
-Regras do roteiro:
+REGRAS DO ROTÉIROS — GERAIS:
 - Linguagem conversacional e natural — como se estivessem falando ao vivo
 - Duração estimada de {duration_min} a {duration_max} minutos de áudio
 - Começar com uma introdução que prenda a atenção do ouvinte
@@ -64,6 +67,15 @@ Regras do roteiro:
 - Terminar com uma conclusão e chamada para reflexão
 - NÃO mencionar que é um resumo gerado — tratar como análise editorial
 - NÃO usar termos como "conforme o documento" ou "segundo o resumo"
+
+REGRAS DE DURAÇÃO — OBRIGATÓRIAS:
+- Cada item de "falas" representa uma vez que o apresentador fala consecutivamente.
+- O campo "texto" de CADA FALA deve ter NO MÍNIMO 100 palavras (idealmente 150 a 250).
+- NUNCA escreva uma fala de 1 ou 2 frases — isso tornaria o podcast superficial e sem valor.
+- Quando {host1} apresenta um tema, deve contextualizá-lo em pelo menos 3 frases antes de passar a palavra.
+- Quando {host2} responde, deve desenvolver o argumento COMPLETAMENTE — dados, exemplos, implicações — antes de concluir.
+- Quando alguém faz uma pergunta, deve elaborar o contexto em 2–3 frases antes da pergunta em si.
+- Cada "fala" deve ser AUTOCONTIDA: quem ouvir apenas aquele trecho deve entender o que está sendo dito.
 
 Responda APENAS com um JSON válido no formato:
 {{
@@ -157,6 +169,56 @@ def llm_call(provider: str, model: str, system: str, user: str) -> str:
         return "".join(result).strip()
 
     raise ValueError(f"Provider desconhecido: {provider}")
+
+
+EXPAND_SYSTEM = """Você é um roteirista de podcasts. Expanda a fala fornecida mantendo o tom conversacional."""
+
+EXPAND_USER_TEMPLATE = """A fala abaixo de {speaker} em um podcast sobre "{titulo}" está muito curta ({words} palavras).
+Expanda-a para pelo menos 3 parágrafos completos (mínimo 150 palavras), desenvolvendo os argumentos
+com detalhes, exemplos e contexto. Mantenha a voz e o tom do personagem.
+NÃO adicione nenhum texto fora da fala — responda APENAS com o texto expandido, sem aspas nem JSON.
+
+Fala original:
+{texto}
+
+Contexto do podcast (trecho anterior e posterior):
+{contexto}"""
+
+
+def expand_short_falas(
+    falas: list[dict],
+    titulo: str,
+    provider: str,
+    model: str,
+) -> list[dict]:
+    """Expande falas abaixo de MIN_WORDS_PER_FALA palavras."""
+    short = [i for i, f in enumerate(falas) if len(f["texto"].split()) < MIN_WORDS_PER_FALA]
+    if not short:
+        return falas
+
+    print(f"\n  {len(short)} fala(s) abaixo de {MIN_WORDS_PER_FALA} palavras — expandindo...")
+    result = list(falas)
+    for idx, i in enumerate(short, 1):
+        fala = result[i]
+        words = len(fala["texto"].split())
+        prev_text = result[i - 1]["texto"][-200:] if i > 0 else ""
+        next_text = result[i + 1]["texto"][:200] if i < len(result) - 1 else ""
+        contexto = f"Fala anterior: ...{prev_text}\nFala posterior: {next_text}..."
+        print(f"  [{idx}/{len(short)}] Expandindo fala {i+1} de {fala['speaker']} ({words} palavras)...", flush=True)
+        t0 = time.time()
+        prompt = EXPAND_USER_TEMPLATE.format(
+            speaker=fala["speaker"],
+            titulo=titulo,
+            words=words,
+            texto=fala["texto"],
+            contexto=contexto,
+        )
+        expanded = llm_call(provider, model, EXPAND_SYSTEM, prompt)
+        # Limpa aspas ou prefixos que o modelo possa ter adicionado
+        expanded = expanded.strip().strip('"').strip("'").strip()
+        result[i] = {**fala, "texto": expanded}
+        print(f"        ✓ {len(expanded.split())} palavras em {time.time() - t0:.0f}s")
+    return result
 
 
 def parse_script_json(raw: str) -> dict:
@@ -346,6 +408,226 @@ def concatenate_audio(audio_paths: list[Path], output_path: Path, pause_ms: int 
 
 
 # ---------------------------------------------------------------------------
+# Helpers reutilizáveis
+# ---------------------------------------------------------------------------
+
+def _generate_script(
+    input_path: Path,
+    provider: str,
+    model: str | None,
+    host1: str,
+    host2: str,
+    duration_min: int,
+    duration_max: int,
+) -> tuple[dict, float]:
+    """Gera o roteiro do podcast via LLM. Retorna (script_dict, elapsed_seconds)."""
+    markdown_content = input_path.read_text(encoding="utf-8")
+    max_chars = 4_000 if provider == "ollama" else 40_000
+    if len(markdown_content) > max_chars:
+        markdown_content = markdown_content[:max_chars] + "\n\n[...conteúdo truncado...]"
+        if provider == "ollama":
+            print(f"  (resumo truncado para {max_chars} chars)")
+
+    print("Gerando roteiro via LLM...")
+    t0 = time.time()
+    prompt = SCRIPT_USER_TEMPLATE.format(
+        host1=host1,
+        host2=host2,
+        duration_min=duration_min,
+        duration_max=duration_max,
+        markdown_content=markdown_content,
+    )
+    raw = llm_call(provider, model, SCRIPT_SYSTEM, prompt)
+    elapsed = time.time() - t0
+    script = parse_script_json(raw)
+    print(f"  ✓ roteiro concluído em {elapsed:.0f}s")
+
+    script["falas"] = expand_short_falas(
+        script.get("falas", []),
+        titulo=script.get("titulo", ""),
+        provider=provider,
+        model=model,
+    )
+    return script, elapsed
+
+
+def _generate_audio(
+    falas: list[dict],
+    voice_map: dict,
+    tts: str,
+    output_path: Path,
+    pause_ms: int,
+) -> None:
+    """Gera e concatena o áudio para a lista de falas."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        print(f"Gerando áudio para {len(falas)} segmentos ({tts})...")
+
+        if tts == "edge":
+            audio_paths = asyncio.run(tts_edge_batch(falas, voice_map, tmp))
+        else:
+            audio_paths = tts_openai_batch(falas, voice_map, tmp)
+
+        missing = [p for p in audio_paths if not p.exists()]
+        if missing:
+            print(f"AVISO: {len(missing)} segmentos não puderam ser gerados.")
+            audio_paths = [p for p in audio_paths if p.exists()]
+
+        print(f"\nConcatenando {len(audio_paths)} segmentos (pausa: {pause_ms}ms)...", end=" ", flush=True)
+        concatenate_audio(audio_paths, output_path, pause_ms=pause_ms)
+        print("ok")
+
+
+def _script_stats(script: dict) -> dict:
+    """Calcula estatísticas de palavras por fala."""
+    falas = script.get("falas", [])
+    if not falas:
+        return {"total_falas": 0, "min_words": 0, "max_words": 0, "avg_words": 0,
+                "total_words": 0, "short_falas": 0}
+    word_counts = [len(f["texto"].split()) for f in falas]
+    return {
+        "total_falas": len(falas),
+        "min_words": min(word_counts),
+        "max_words": max(word_counts),
+        "avg_words": int(sum(word_counts) / len(word_counts)),
+        "total_words": sum(word_counts),
+        "short_falas": sum(1 for w in word_counts if w < MIN_WORDS_PER_FALA),
+    }
+
+
+def _progress_bar(current: int, total: int, width: int = 24) -> str:
+    """Retorna string com barra de progresso: [████░░░░] XX%"""
+    filled = int(width * current / total) if total else 0
+    bar = "█" * filled + "░" * (width - filled)
+    pct = int(100 * current / total) if total else 0
+    return f"[{bar}] {pct:3d}%"
+
+
+def _ollama_unload(model: str) -> None:
+    """Descarrega o modelo da RAM do Ollama (keep_alive=0) para liberar memória."""
+    try:
+        import requests as _req
+        url = os.environ.get("OLLAMA_HOST", "http://localhost:11434") + "/api/generate"
+        _req.post(url, json={"model": model, "keep_alive": 0}, timeout=10)
+        print(f"  ↓ modelo '{model}' descarregado da RAM")
+    except Exception:
+        pass  # não crítico, apenas uma otimização de memória
+
+
+def _run_comparison(args, input_path: Path, voice_map: dict, models: list[str]) -> None:
+    """Gera roteiro e áudio para cada modelo SEQUENCIALMENTE e exibe tabela comparativa."""
+    results = []
+    total = len(models)
+    comparison_start = time.time()
+    print(f"\n{'═' * 60}")
+    print(f"  MODO COMPARAÇÃO: {total} modelos (sequencial)")
+    print(f"  {' → '.join(models)}")
+    print(f"  Cada modelo será descarregado da RAM antes do próximo iniciar.")
+    print(f"{'═' * 60}")
+
+    for idx, model in enumerate(models, 1):
+        safe_name = model.replace(":", "_").replace("/", "_")
+        script_path = input_path.with_name(f"{input_path.stem}_script_{safe_name}.json")
+        mp3_path = input_path.with_name(f"{input_path.stem}_{safe_name}.mp3")
+
+        # Barra de progresso geral
+        elapsed_total = time.time() - comparison_start
+        if idx > 1 and elapsed_total > 0:
+            avg_per_model = elapsed_total / (idx - 1)
+            eta_s = avg_per_model * (total - idx + 1)
+            eta_str = f"  ETA {int(eta_s // 60):02d}:{int(eta_s % 60):02d}"
+        else:
+            eta_str = ""
+        bar_str = _progress_bar(idx - 1, total)
+        print(f"\n{'─' * 60}")
+        print(f"  {bar_str}  modelo {idx}/{total}{eta_str}")
+        print(f"  Processando: {model}")
+        print(f"{'─' * 60}")
+
+        t_total = time.time()
+        script, script_elapsed = _generate_script(
+            input_path=input_path,
+            provider=args.provider,
+            model=model,
+            host1=args.host1,
+            host2=args.host2,
+            duration_min=args.duration_min,
+            duration_max=args.duration_max,
+        )
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            json.dump(script, f, ensure_ascii=False, indent=2)
+        print(f"  Roteiro: {script_path}")
+
+        if not args.script_only:
+            _generate_audio(script.get("falas", []), voice_map, args.tts, mp3_path, args.pause_ms)
+            size_mb = mp3_path.stat().st_size / 1_000_000 if mp3_path.exists() else 0
+            print(f"  Áudio:   {mp3_path}  ({size_mb:.1f} MB)")
+        else:
+            size_mb = 0
+
+        stats = _script_stats(script)
+        model_elapsed = time.time() - t_total
+        results.append({
+            "model": model,
+            "titulo": script.get("titulo", "—"),
+            "duracao_estimada": script.get("duracao_estimada", "—"),
+            "script_time": script_elapsed,
+            "total_time": model_elapsed,
+            "size_mb": size_mb,
+            "script_path": script_path,
+            "mp3_path": mp3_path if not args.script_only else None,
+            **stats,
+        })
+
+        done_bar = _progress_bar(idx, total)
+        print(f"  {done_bar}  modelo {idx}/{total}  ✓ concluído em {model_elapsed:.0f}s")
+
+        # Descarrega modelo da RAM antes de passar para o próximo
+        if args.provider == "ollama" and idx < total:
+            _ollama_unload(model)
+
+    # ── Tabela comparativa ──────────────────────────────────────────
+    total_elapsed = time.time() - comparison_start
+    print(f"\n{'═' * 60}")
+    print(f"  RESULTADO DA COMPARAÇÃO")
+    print(f"  {_progress_bar(total, total)}  {total}/{total} modelos  ✓ total {int(total_elapsed // 60):02d}:{int(total_elapsed % 60):02d}")
+    print(f"{'═' * 60}")
+    col = 22
+    header = f"  {'Métrica':<24}" + "".join(f"{m:>{col}}" for m in models)
+    print(header)
+    print(f"  {'─' * (24 + col * len(models))}")
+
+    rows = [
+        ("Falas geradas",        lambda r: str(r["total_falas"])),
+        ("Total de palavras",    lambda r: str(r["total_words"])),
+        ("Palavras/fala (média)", lambda r: str(r["avg_words"])),
+        ("Palavras/fala (mín)",  lambda r: str(r["min_words"])),
+        ("Palavras/fala (máx)",  lambda r: str(r["max_words"])),
+        ("Falas curtas (<80p)",  lambda r: str(r["short_falas"])),
+        ("Duração estimada",     lambda r: r["duracao_estimada"]),
+        ("Tempo roteiro",        lambda r: f"{r['script_time']:.0f}s"),
+        ("Tempo total",          lambda r: f"{r['total_time']:.0f}s"),
+        ("Tamanho MP3",          lambda r: f"{r['size_mb']:.1f} MB" if r["size_mb"] else "—"),
+    ]
+    for label, fn in rows:
+        print(f"  {label:<24}" + "".join(f"{fn(r):>{col}}" for r in results))
+
+    print(f"\n  Títulos gerados:")
+    for r in results:
+        print(f"    [{r['model']}]  {r['titulo']}")
+
+    print(f"\n  Roteiros JSON salvos:")
+    for r in results:
+        print(f"    {r['script_path']}")
+    if not args.script_only:
+        print(f"\n  Áudios MP3 salvos:")
+        for r in results:
+            print(f"    {r['mp3_path']}")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -376,6 +658,9 @@ def main() -> None:
                         help="Pula geração do roteiro e usa um JSON existente diretamente")
     parser.add_argument("--list-voices", action="store_true",
                         help="Lista vozes Edge TTS disponíveis para português e encerra")
+    parser.add_argument("--compare-models", default=None, metavar="MODELO_A,MODELO_B",
+                        help="Gera roteiro e áudio com dois modelos e exibe tabela comparativa. "
+                             "Ex: --compare-models llama3.1,llama3.2")
     args = parser.parse_args()
 
     # Lista vozes
@@ -388,15 +673,23 @@ def main() -> None:
         print(f"ERRO: Arquivo não encontrado: {input_path}")
         sys.exit(1)
 
-    output_path = Path(args.output) if args.output else input_path.with_suffix(".mp3")
-    script_path = input_path.with_name(input_path.stem + "_podcast_script.json")
-
     # Mapa de vozes por speaker
     if args.tts == "edge":
         voice_map = {args.host1: args.voice1, args.host2: args.voice2}
     else:
-        # Vozes OpenAI: alloy, echo, fable, onyx, nova, shimmer
         voice_map = {args.host1: "onyx", args.host2: "nova"}
+
+    # Modo comparação
+    if args.compare_models:
+        models = [m.strip() for m in args.compare_models.split(",") if m.strip()]
+        if len(models) < 2:
+            print("ERRO: --compare-models requer dois modelos separados por vírgula.")
+            sys.exit(1)
+        _run_comparison(args, input_path, voice_map, models)
+        return
+
+    output_path = Path(args.output) if args.output else input_path.with_suffix(".mp3")
+    script_path = input_path.with_name(input_path.stem + "_podcast_script.json")
 
     # --------------- Passo 1: Roteiro ---------------
     if args.from_script:
@@ -404,43 +697,18 @@ def main() -> None:
         with open(args.from_script, encoding="utf-8") as f:
             podcast_script = json.load(f)
     else:
-        markdown_content = input_path.read_text(encoding="utf-8")
-
-        # Limita o tamanho para caber no contexto do LLM
-        # Modelos locais (ollama) são mais lentos: usa limite menor
-        # Modelos 1B (ex: llama3.2:1b) precisam de contexto ainda menor
-        if args.provider == "ollama":
-            max_chars = 4_000
-        else:
-            max_chars = 40_000
-        if len(markdown_content) > max_chars:
-            markdown_content = markdown_content[:max_chars] + "\n\n[...conteúdo truncado...]"
-            if args.provider == "ollama":
-                print(f"  (resumo truncado para {max_chars} chars para melhorar velocidade no modelo local)")
-
-        print(f"\nArquivo: {input_path.name}")
-        print(f"Provider LLM: {args.provider} | TTS: {args.tts}")
-        print(f"Hosts: {args.host1} ({args.voice1}) e {args.host2} ({args.voice2})")
-        print(f"Duração alvo: {args.duration_min}–{args.duration_max} min\n")
-
-        print("Gerando roteiro de podcast via LLM...")
-        t0_script = time.time()
-        prompt = SCRIPT_USER_TEMPLATE.format(
+        podcast_script, _ = _generate_script(
+            input_path=input_path,
+            provider=args.provider,
+            model=args.model,
             host1=args.host1,
             host2=args.host2,
             duration_min=args.duration_min,
             duration_max=args.duration_max,
-            markdown_content=markdown_content,
         )
-        raw = llm_call(args.provider, args.model, SCRIPT_SYSTEM, prompt)
-        script_time = time.time() - t0_script
-        podcast_script = parse_script_json(raw)
-        print(f"  ✓ roteiro concluído em {script_time:.0f}s")
-
         with open(script_path, "w", encoding="utf-8") as f:
             json.dump(podcast_script, f, ensure_ascii=False, indent=2)
         print(f"Roteiro salvo: {script_path}")
-
         print(f"\nTítulo:   {podcast_script.get('titulo', '—')}")
         print(f"Descrição: {podcast_script.get('descricao', '—')}")
         print(f"Duração:  {podcast_script.get('duracao_estimada', '—')}")
@@ -455,27 +723,8 @@ def main() -> None:
         print("ERRO: Roteiro sem falas.")
         sys.exit(1)
 
-    # --------------- Passo 2: TTS ---------------
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp = Path(tmp_dir)
-        print(f"Gerando áudio para {len(falas)} segmentos ({args.tts})...")
-
-        if args.tts == "edge":
-            audio_paths = asyncio.run(tts_edge_batch(falas, voice_map, tmp))
-        else:
-            audio_paths = tts_openai_batch(falas, voice_map, tmp)
-
-        # Verifica se todos foram gerados
-        missing = [p for p in audio_paths if not p.exists()]
-        if missing:
-            print(f"AVISO: {len(missing)} segmentos não puderam ser gerados.")
-            audio_paths = [p for p in audio_paths if p.exists()]
-
-        # --------------- Passo 3: Concatenação ---------------
-        print(f"\nConcatenando {len(audio_paths)} segmentos (pausa: {args.pause_ms}ms)...", end=" ", flush=True)
-        concatenate_audio(audio_paths, output_path, pause_ms=args.pause_ms)
-        print("ok")
-
+    # --------------- Passo 2 + 3: TTS + Concatenação ---------------
+    _generate_audio(falas, voice_map, args.tts, output_path, args.pause_ms)
     size_mb = output_path.stat().st_size / 1_000_000
     print(f"\nPodcast gerado: {output_path}  ({size_mb:.1f} MB)")
     print(f"Roteiro JSON:   {script_path}")

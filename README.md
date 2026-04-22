@@ -1,17 +1,18 @@
 # YouTubeProcessor
 
-Ferramentas para extrair e processar transcrições de vídeos do YouTube com timestamps.
+Ferramentas para extrair, transcrever, resumir e converter em podcast vídeos do YouTube — totalmente locais e gratuitos com Ollama.
 
 ## Visão Geral
 
-Três scripts independentes, organizados em camadas:
+Cinco scripts organizados em camadas, podendo ser usados individualmente ou via orquestrador:
 
 | Script | Função | Depende de |
 |---|---|---|
 | `extract_transcript.py` | Extrai transcrição via legendas nativas do YouTube | `youtube-transcript-api`, `yt-dlp` |
 | `diarize_transcript.py` | Baixa áudio e transcreve com identificação de falantes | `whisper`, `pyannote.audio`, `torch` |
 | `summarize_transcript.py` | Gera resumo estruturado em Markdown via LLM | `openai` / `anthropic` / Ollama local |
-| `generate_podcast.py` | Converte um resumo Markdown em áudio estilo podcast | `edge-tts`, `imageio-ffmpeg`, `audioop-lts` |
+| `generate_podcast.py` | Converte resumo Markdown em áudio estilo podcast | `edge-tts`, `imageio-ffmpeg`, `audioop-lts` |
+| `process_video.py` | **Orquestrador**: executa os 3 passos em sequência | todos acima |
 
 ---
 
@@ -27,6 +28,55 @@ Para a abordagem com diarização, instale as dependências adicionais:
 
 ```bash
 pip install openai-whisper pyannote.audio torch torchaudio
+```
+
+---
+
+## `process_video.py` — Orquestrador do pipeline completo
+
+Executa os três passos (extração → resumo → podcast) em sequência, com barra de progresso e temporizadores.
+
+### Uso
+
+```bash
+# Pipeline completo (extração + resumo + podcast)
+python process_video.py https://www.youtube.com/live/ID
+
+# Apenas extração + resumo (sem podcast)
+python process_video.py <URL> --skip-podcast
+
+# Apenas extração (sem resumo nem podcast)
+python process_video.py <URL> --skip-summary
+
+# Escolher modelo Ollama
+python process_video.py <URL> --model llama3.1
+
+# Escolher idioma da transcrição
+python process_video.py <URL> --lang en
+```
+
+### Argumentos
+
+| Argumento | Descrição | Padrão |
+|---|---|---|
+| `url` | URL do vídeo no YouTube | — |
+| `--model` | Modelo Ollama para resumo e roteiro | `llama3.2` |
+| `--lang` | Idioma da transcrição | `pt` |
+| `--output-dir` | Diretório base de saída | `./transcripts` |
+| `--skip-summary` | Pula o resumo e o podcast | — |
+| `--skip-podcast` | Pula apenas o podcast | — |
+
+### Saída organizada por data
+
+Todos os arquivos são salvos em subdiretório com data e título:
+```
+transcripts/
+  2026.04.21 - Título do Vídeo/
+    videoId_Título.json       ← transcrição
+    videoId_Título.md         ← resumo estruturado
+    videoId_Título.mp3        ← podcast
+    videoId_Título_podcast_script.json
+    videoId_Título_chunks.json
 ```
 
 ---
@@ -184,7 +234,7 @@ Recebe o JSON gerado por `extract_transcript.py` ou `diarize_transcript.py` e pr
 |---|---|---|
 | `openai` | `gpt-4o-mini` | `OPENAI_API_KEY` |
 | `anthropic` | `claude-3-5-haiku-20241022` | `ANTHROPIC_API_KEY` |
-| `ollama` | `llama3.2` | Ollama rodando localmente (gratuito) |
+| `ollama` | `llama3.1` | Ollama rodando localmente (gratuito) |
 
 ### Uso
 
@@ -198,11 +248,11 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 python summarize_transcript.py transcripts/video.json --provider anthropic
 
 # Com Ollama local (gratuito, sem API key)
-ollama pull llama3.2
-python summarize_transcript.py transcripts/video.json --provider ollama --model llama3.2
+ollama pull llama3.1
+python summarize_transcript.py transcripts/video.json --provider ollama --model llama3.1
 
-# Ajustar tamanho das janelas de análise (padrão: 15 min)
-python summarize_transcript.py transcripts/video.json --chunk-minutes 20
+# Ajustar tamanho das janelas de análise (padrão: 10 min para ollama, 15 para os demais)
+python summarize_transcript.py transcripts/video.json --chunk-minutes 15
 
 # Especificar arquivo de saída
 python summarize_transcript.py transcripts/video.json --output resumo.md
@@ -215,13 +265,25 @@ python summarize_transcript.py transcripts/video.json --output resumo.md
 | `input` | Arquivo JSON da transcrição | — |
 | `--provider` | Provedor LLM: `openai`, `anthropic`, `ollama` | `openai` |
 | `--model` | Modelo a usar | varia por provider |
-| `--chunk-minutes` | Duração de cada janela de análise (min) | `15` |
+| `--chunk-minutes` | Duração de cada janela de análise (min) | `10` (ollama) / `15` |
 | `--output` | Arquivo `.md` de saída | mesmo nome do input |
+
+### Seções do documento gerado
+
+- **Metadados** — tabela com fonte, duração, idioma, segmentos e video ID
+- **Resumo Executivo** — 3-5 parágrafos com participantes e posições
+- **Participantes** — tabela com nome, cargo/organização e argumento central
+- **Temas e Tópicos Abordados** — lista hierárquica
+- **Debates e Posições** — subseções por tema, com réplicas e tréplicas atribuídas por nome
+- **Decisões e Encaminhamentos** — lista numerada
+- **Linha do Tempo** — tabela Horário | Interlocutor | Tópico
 
 ### Saídas geradas
 
-- `<video>.md` — documento Markdown estruturado com todas as seções
-- `<video>_chunks.json` — resumos parciais por janela de tempo (para reuso)
+- `<video>.md` — documento Markdown estruturado
+- `<video>_chunks.json` — análises parciais por janela de tempo (para reuso)
+
+> **Estratégia:** extração por janela usa **narrativa livre** (não JSON) para maximizar a qualidade da análise em modelos locais. O modelo descreve participantes, debates com réplicas e decisões em texto corrido por janela; a síntese final consolida tudo em Markdown estruturado.
 
 ---
 
@@ -259,6 +321,9 @@ pip install edge-tts imageio-ffmpeg audioop-lts
 export OPENAI_API_KEY="sk-..."
 python generate_podcast.py transcripts/video.md
 
+# Com Ollama local (gratuito)
+python generate_podcast.py transcripts/video.md --provider ollama --model llama3.1
+
 # Com LLM Anthropic e TTS gratuito
 export ANTHROPIC_API_KEY="sk-ant-..."
 python generate_podcast.py transcripts/video.md --provider anthropic
@@ -277,6 +342,10 @@ python generate_podcast.py transcripts/video.md --from-script transcripts/video_
 
 # Listar vozes Edge disponíveis para português
 python generate_podcast.py transcripts/video.md --list-voices
+
+# Comparar dois ou mais modelos (gera roteiro/áudio para cada um sequencialmente)
+python generate_podcast.py transcripts/video.md --provider ollama \
+  --compare-models "llama3.1,gemma3:4b,mistral" --script-only
 ```
 
 ### Argumentos
@@ -298,11 +367,13 @@ python generate_podcast.py transcripts/video.md --list-voices
 | `--script-only` | Gera apenas o roteiro JSON | — |
 | `--from-script` | Usa JSON existente, pula LLM | — |
 | `--list-voices` | Lista vozes Edge para pt e encerra | — |
+| `--compare-models` | Lista de modelos separados por vírgula para comparação sequencial | — |
 
 ### Saídas geradas
 
 - `<video>.mp3` — episódio de podcast completo
 - `<video>_podcast_script.json` — roteiro estruturado com todas as falas
+- (modo comparação) `<video>_script_<modelo>.json` e `<video>_<modelo>.mp3` por modelo
 
 ---
 

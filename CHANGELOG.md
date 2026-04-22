@@ -11,27 +11,48 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
-- `generate_podcast.py`: converte resumo Markdown em episódio de podcast em MP3
-  - LLM gera roteiro conversacional com dois hosts em português
-  - TTS Microsoft Edge (gratuito) com vozes `pt-BR-AntonioNeural` e `pt-BR-FranciscaNeural`
-  - Suporte a TTS OpenAI como alternativa paga
-  - `ffmpeg` (via `imageio-ffmpeg` bundled) concatena segmentos com pausas configuráveis e exporta MP3
-  - `imageio-ffmpeg` fornece binário pré-compilado do ffmpeg — sem necessidade de instalação via brew/apt
-  - `audioop-lts` garante compatibilidade com Python 3.13+ (módulo `audioop` removido da stdlib)
-  - Modo `--script-only` para gerar apenas o roteiro JSON sem áudio
-  - Modo `--from-script` para reutilizar roteiro já gerado
-  - Argumento `--list-voices` lista todas as vozes Edge TTS para português
+- `process_video.py`: orquestrador do pipeline completo (extração → resumo → podcast)
+  - Executa os 3 passos em sequência com um único comando
+  - Barra de progresso geral e temporizador por passo (`fmt_duration`, `progress_bar`, `banner`)
+  - Tabela de tempos no final com duração de cada etapa e percentual do total
+  - Flags `--skip-summary` e `--skip-podcast` para execução parcial
+  - Localiza automaticamente o JSON gerado pelo `extract_transcript.py` via glob com data de hoje
 
-- `summarize_transcript.py`: geração de resumo estruturado em Markdown via LLM
-  - Estratégia map-reduce: divide a transcrição em janelas de tempo, resume cada janela e sintetiza o documento final
-  - Suporte a três provedores: OpenAI (`gpt-4o-mini`), Anthropic (`claude-3-5-haiku`) e Ollama local (`llama3.2`)
-  - Documento Markdown gerado com: resumo executivo, temas, discussões, decisões, participantes e linha do tempo
-  - Salva resumos parciais por janela em `_chunks.json` para reuso sem reprocessar
-  - Argumento `--chunk-minutes` para controlar o tamanho das janelas de análise (padrão: 15 min)
+- `generate_podcast.py`: modo de comparação sequencial entre modelos (`--compare-models`)
+  - Aceita lista de modelos separados por vírgula: `--compare-models "llama3.1,gemma3:4b,mistral"`
+  - Executa geração de roteiro (e opcionalmente áudio) para cada modelo em sequência
+  - Chama `keep_alive: 0` na API do Ollama entre modelos para descarregar da RAM antes do próximo
+  - Exibe tabela comparativa ao final: falas, palavras totais, média/mín/máx por fala, falas curtas, tempos
+  - Funciona com `--script-only` para comparação rápida só dos roteiros
+
+- `generate_podcast.py`: prompt de roteiro reescrito com diretrizes de tamanho mínimo por fala
+  - Exige mínimo de 100 palavras por fala; descreve regras por papel (host vs. co-host)
+  - Passagem de expansão automática (`expand_short_falas`): detecta falas abaixo de 80 palavras e as expande individualmente com contexto da fala anterior/posterior
+
+- `generate_podcast.py`: progresso em tempo real na geração via Ollama
+  - Streaming com contador de chars recebidos e tempo decorrido (atualizado por token)
+  - Modelo padrão Ollama atualizado para `llama3.1`; `stream=True` substitui `stream=False`
+
+- `generate_podcast.py`: barra de progresso no TTS em batches
+  - Exibe `[████░░░░] XX%  N/M segmentos  ⏱ Xs` após cada batch de 5 segmentos
+
+- `summarize_transcript.py`: análise por janela migrada de JSON estruturado para narrativa livre
+  - Prompts reescritos para extrair participantes por nome, debates com réplicas/tréplicas e citações
+  - Corrige erros de transcrição (ex: "inúrupta" → "ininterrupta") via instrução explícita no prompt
+  - Prompt de síntese com nova seção "Debates e Posições" e Linha do Tempo com coluna Interlocutor
+  - Metadados injetados diretamente via `{metadata_table}` no template (sem `replace()` frágil)
+  - Modelo padrão Ollama atualizado de `llama3.2` para `llama3.1`
+  - Chunk padrão Ollama aumentado de 5 min para 10 min (contexto maior para identificar interlocutores)
+
+- `summarize_transcript.py`: barra de progresso por janela de análise
+  - Mostra `[████░░] XX%  HH:MM→HH:MM  ETA MM:SS` antes de cada janela
+  - Exibe tempo de cada janela após conclusão e resumo final (total + média/janela)
+  - Etapa de síntese também reporta tempo de conclusão
 
 ### Corrigido
 
 - `extract_transcript.py`: regex de extração de `video_id` agora suporta URLs no formato `/live/` (YouTube Live)
+- `generate_podcast.py`: provider Ollama migrado para streaming, eliminando timeouts em roteiros longos
 
 ---
 
