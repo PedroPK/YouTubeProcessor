@@ -23,7 +23,19 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   - Executa geração de roteiro (e opcionalmente áudio) para cada modelo em sequência
   - Chama `keep_alive: 0` na API do Ollama entre modelos para descarregar da RAM antes do próximo
   - Exibe tabela comparativa ao final: falas, palavras totais, média/mín/máx por fala, falas curtas, tempos
+  - Gera automaticamente um arquivo Markdown `<video>_comparison.md` com métricas e roteiros por modelo
+  - Inclui seções por modelo com falas transcritas para facilitar revisão
   - Funciona com `--script-only` para comparação rápida só dos roteiros
+
+- `script_to_md.py`: utilitário para converter um ou mais roteiros JSON de podcast em Markdown
+  - Usa os arquivos `*_script_*.json` já existentes
+  - Gera arquivos `<script>_summary.md` automaticamente
+  - Permite processamento em lote com múltiplos inputs num único comando
+
+- `summarize_transcript_batch.py`: novo utilitário para gerar resumos executivos em Markdown para vários modelos a partir de uma única transcrição JSON
+  - Executa `summarize_transcript.py` para cada modelo listado
+  - Gera arquivos `<transcript>_<modelo>_summary.md`
+  - Suporte a `--provider`, `--chunk-minutes` e `--output-dir`
 
 - `generate_podcast.py`: prompt de roteiro reescrito com diretrizes de tamanho mínimo por fala
   - Exige mínimo de 100 palavras por fala; descreve regras por papel (host vs. co-host)

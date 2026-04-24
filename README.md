@@ -348,6 +348,35 @@ python generate_podcast.py transcripts/video.md --provider ollama \
   --compare-models "llama3.1,gemma3:4b,mistral" --script-only
 ```
 
+# Converter scripts JSON em Markdown
+python script_to_md.py \
+  "transcripts/2026.04.21 - Contingenciamento na defesa agropecuária - Agricultura - 16_/gzmoPbdWnH0_Contingenciamento na defesa agropecuária - Agricul_script_llama3.1.json" \
+  "transcripts/2026.04.21 - Contingenciamento na defesa agropecuária - Agricultura - 16_/gzmoPbdWnH0_Contingenciamento na defesa agropecuária - Agricul_script_gemma3_4b.json" \
+  "transcripts/2026.04.21 - Contingenciamento na defesa agropecuária - Agricultura - 16_/gzmoPbdWnH0_Contingenciamento na defesa agropecuária - Agricul_script_mistral.json"
+```
+
+### Saída de comparação
+
+Quando `--compare-models` é usado, o script também gera automaticamente um arquivo Markdown de documentação comparativa:
+
+- `<video>_comparison.md` — tabelas e seções por modelo com métricas, títulos e falas geradas
+- Exemplo: `transcripts/<subpasta>/<video>_comparison.md`
+- Permite revisar diferenças de resultado entre modelos sem abrir diversos arquivos JSON
+
+### Exemplo de geração em lote de resumos executivos
+
+```bash
+python summarize_transcript_batch.py \
+  "transcripts/2026.04.21 - Contingenciamento na defesa agropecuária - Agricultura - 16_/gzmoPbdWnH0_Contingenciamento na defesa agropecuária - Agricul.json" \
+  --provider ollama \
+  --models "llama3.1,gemma3:4b,mistral"
+```
+
+Isso produz:
+- `..._lla­ma3.1_summary.md`
+- `..._gemma3_4b_summary.md`
+- `..._mistral_summary.md`
+
 ### Argumentos
 
 | Argumento | Descrição | Padrão |

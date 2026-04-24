@@ -40,6 +40,7 @@ import json
 import os
 import sys
 import tempfile
+import datetime
 import time
 from pathlib import Path
 
@@ -495,6 +496,94 @@ def _script_stats(script: dict) -> dict:
     }
 
 
+def _write_comparison_md(
+    results: list[dict],
+    input_path: Path,
+    provider: str,
+    total_elapsed: float,
+    script_only: bool,
+) -> Path:
+    """Gera arquivo Markdown com a comparação dos modelos."""
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    models = [r["model"] for r in results]
+    out_path = input_path.with_name(f"{input_path.stem}_comparison.md")
+
+    lines: list[str] = []
+    lines.append(f"# Comparação de Modelos — {input_path.stem}")
+    lines.append(f"")
+    lines.append(f"**Data:** {now}  ")
+    lines.append(f"**Provider:** {provider}  ")
+    lines.append(f"**Modelos:** {', '.join(models)}  ")
+    lines.append(f"**Tempo total:** {int(total_elapsed // 60):02d}:{int(total_elapsed % 60):02d}  ")
+    lines.append(f"")
+    lines.append("---")
+    lines.append(f"")
+
+    # ── Tabela de métricas ──────────────────────────────────────────
+    lines.append("## Métricas comparativas")
+    lines.append(f"")
+    header = "| Métrica | " + " | ".join(models) + " |"
+    sep    = "|---|" + "---|" * len(models)
+    lines.append(header)
+    lines.append(sep)
+
+    rows = [
+        ("Falas geradas",         lambda r: str(r["total_falas"])),
+        ("Total de palavras",     lambda r: str(r["total_words"])),
+        ("Palavras/fala (média)", lambda r: str(r["avg_words"])),
+        ("Palavras/fala (mín)",  lambda r: str(r["min_words"])),
+        ("Palavras/fala (máx)",  lambda r: str(r["max_words"])),
+        ("Falas curtas (<80p)",  lambda r: str(r["short_falas"])),
+        ("Duração estimada",      lambda r: r["duracao_estimada"]),
+        ("Tempo roteiro",         lambda r: f"{r['script_time']:.0f}s"),
+        ("Tempo total",           lambda r: f"{r['total_time']:.0f}s"),
+        ("Tamanho MP3",           lambda r: f"{r['size_mb']:.1f} MB" if r["size_mb"] else "—"),
+    ]
+    for label, fn in rows:
+        lines.append("| " + label + " | " + " | ".join(fn(r) for r in results) + " |")
+    lines.append(f"")
+
+    # ── Títulos gerados ─────────────────────────────────────────────
+    lines.append("## Títulos gerados")
+    lines.append(f"")
+    for r in results:
+        lines.append(f"**{r['model']}:** {r['titulo']}  ")
+    lines.append(f"")
+
+    # ── Roteiros por modelo ─────────────────────────────────────────
+    for r in results:
+        safe = r["model"].replace(":", "_").replace("/", "_")
+        script_path = input_path.with_name(f"{input_path.stem}_script_{safe}.json")
+        try:
+            with open(script_path, encoding="utf-8") as f:
+                script = json.load(f)
+            falas = script.get("falas", [])
+        except Exception:
+            falas = []
+
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"## Roteiro: {r['model']}")
+        lines.append(f"")
+        lines.append(f"**Título:** {r['titulo']}  ")
+        lines.append(f"**Duração estimada:** {r['duracao_estimada']}  ")
+        lines.append(f"**Falas:** {r['total_falas']}  |  **Palavras:** {r['total_words']}  |  **Média/fala:** {r['avg_words']}  ")
+        if not script_only:
+            mp3 = r.get("mp3_path")
+            if mp3 and Path(mp3).exists():
+                lines.append(f"**Áudio:** `{Path(mp3).name}`  ")
+        lines.append(f"")
+
+        for i, fala in enumerate(falas, 1):
+            host = fala.get("speaker", fala.get("host", fala.get("apresentador", "?")))
+            text = fala.get("texto", fala.get("text", fala.get("fala", "")))
+            lines.append(f"**{host}:** {text}  ")
+            lines.append(f"")
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
 def _progress_bar(current: int, total: int, width: int = 24) -> str:
     """Retorna string com barra de progresso: [████░░░░] XX%"""
     filled = int(width * current / total) if total else 0
@@ -624,6 +713,9 @@ def _run_comparison(args, input_path: Path, voice_map: dict, models: list[str]) 
         print(f"\n  Áudios MP3 salvos:")
         for r in results:
             print(f"    {r['mp3_path']}")
+
+    md_path = _write_comparison_md(results, input_path, args.provider, total_elapsed, args.script_only)
+    print(f"\n  Documentação comparativa: {md_path}")
     print()
 
 
